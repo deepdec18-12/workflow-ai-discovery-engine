@@ -1,0 +1,528 @@
+{
+  "name": "Spotify AI Review Discovery Engine",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        96
+      ],
+      "id": "0feb581c-eda2-4f7b-a462-8eb59071d1fa",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "fileSelector": "/workspace/data/processed/gpt_input_reviews.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        96
+      ],
+      "id": "a0a79e8c-2aaa-431e-8fad-ee5b48dbf09c",
+      "name": "Read/Write Files from Disk"
+    },
+    {
+      "parameters": {
+        "options": {
+          "headerRow": true
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        96
+      ],
+      "id": "fd19f5ca-7e35-444d-b66c-7331fc83988d",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Keep only fields required by the LLM\n\nreturn items.map(item => {\n\n    const r = item.json;\n\n    return {\n        json: {\n            review_id: r.original_review_id,\n            source: r.source,\n            country: r.country,\n            rating: r.rating,\n            discovery_score: r.discovery_score,\n            categories: r.categories,\n            review: r.review\n        }\n    };\n\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        96
+      ],
+      "id": "90b8324f-6406-420e-b367-26e944d8b626",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "batchSize": 30,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1120,
+        16
+      ],
+      "id": "63091abf-7dab-453f-a2d8-76abe57ee615",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "name": "Replace Me",
+      "typeVersion": 1,
+      "position": [
+        896,
+        96
+      ],
+      "id": "824f41da-5329-4d2d-843d-b82efc36fbda",
+      "placeholder": true
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{$json.prompt}}"
+            },
+            {
+              "content": "You are an experienced Product Research Analyst.\n\nAlways produce valid JSON.\n\nNever wrap JSON in markdown.\n\nNever explain your answer.\n\nDo not include code fences.\n\nIf evidence is weak, reduce confidence rather than inventing information.\n\nOnly use information present in the supplied reviews.\n\nFollow the provided JSON schema exactly."
+            }
+          ]
+        },
+        "jsonOutput": "={{ true }}",
+        "builtInTools": {},
+        "options": {
+          "maxOutputTokens": 4096,
+          "temperature": 0.2,
+          "thinkingBudget": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1568,
+        112
+      ],
+      "id": "1d5771c4-2f13-4fdc-811a-a2ebf0d5ba2f",
+      "name": "Message a model",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "QGI0A43nKblHf8Ix",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get metadata from the Build Prompt node\nconst batch = $('buildPromptNode').first().json;\n\nlet text = \"\";\n\ntry {\n\n    // Gemini response\n    if (\n        $json.content &&\n        $json.content.parts &&\n        $json.content.parts.length > 0\n    ) {\n        text = $json.content.parts[0].text;\n    }\n\n    else if ($json.text) {\n        text = $json.text;\n    }\n\n    else if ($json.output) {\n        text = $json.output;\n    }\n\n    else {\n        throw new Error(\"No Gemini text found.\");\n    }\n\n    // Remove markdown fences if Gemini adds them\n    text = text\n        .replace(/^```json/i, \"\")\n        .replace(/^```/, \"\")\n        .replace(/```$/, \"\")\n        .trim();\n\n    const analysis = JSON.parse(text);\n\n    return [{\n        json: {\n            batch_id: batch.batch_id,\n            batch_number: batch.batch_number,\n            review_count: batch.review_count,\n            review_range: batch.review_range,\n            generated_at: new Date().toISOString(),\n            analysis\n        }\n    }];\n\n}\ncatch(err){\n\n    return [{\n        json:{\n            batch_id: batch.batch_id,\n            parse_error:true,\n            error:err.message,\n            raw:text\n        }\n    }];\n\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1984,
+        112
+      ],
+      "id": "369f6be1-fb18-445d-9dee-9635396b667a",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build one prompt for the current batch of reviews\n\nconst reviews = items.map((item, index) => {\n  const r = item.json;\n\n  return `\nReview ${index + 1}\n\nReview ID: ${r.original_review_id}\nRating: ${r.rating}/5\nCountry: ${r.country}\nSource: ${r.source}\nDiscovery Score: ${r.discovery_score}\nCategories: ${r.categories}\n\nReview:\n${r.review}\n`;\n}).join(\"\\n==================================================\\n\");\n\nconst prompt = `\nYou are an experienced Product Researcher working on Spotify's Music Discovery experience.\n\nYou are analyzing ONE batch of Spotify customer reviews.\n\nYour responsibility is to extract reliable research insights.\n\nDo NOT recommend solutions.\n\nDo NOT design product features.\n\nDo NOT recommend an MVP.\n\nYour task is only to identify recurring evidence from customer feedback.\n\n--------------------------------------------------\nResearch Questions\n--------------------------------------------------\n\nAnswer these questions while analyzing the reviews.\n\n1. Why do users struggle to discover new music?\n\n2. What frustrates users about Spotify recommendations?\n\n3. What unmet discovery needs repeatedly appear?\n\n4. Which user segments experience these problems?\n\n5. Which Spotify discovery features are mentioned most frequently?\n\n6. Which problems appear most severe?\n\n--------------------------------------------------\nAllowed Values\n--------------------------------------------------\n\nProblem\n\n- Repetitive Recommendations\n- Poor Music Discovery\n- Weak Personalization\n- Playlist Experience\n- Recommendation Quality\n- Search & Navigation\n- Other\n\nSegment\n\n- Explorer\n- Power User\n- Casual Listener\n- General\n\nSeverity\n\n- High\n- Medium\n- Low\n\nConfidence\n\n- High\n- Medium\n- Low\n\n--------------------------------------------------\nInstructions\n--------------------------------------------------\n\nRead ALL reviews before answering.\n\nThink across the ENTIRE batch before identifying themes.\n\nDo NOT create one theme per review.\n\nMerge similar complaints into broader themes.\n\nIgnore isolated complaints unless they reveal an emerging customer need.\n\nOnly include themes supported by AT LEAST TWO reviews.\n\nEstimated review count should approximately represent how many reviews support the finding.\n\nRepresentative Review IDs must reference the supplied Review IDs.\n\nInclude ONE representative quote (maximum 15 words) copied exactly from one review.\n\nOrder themes from highest impact to lowest impact using:\n\n- Severity\n- Estimated review count\n- Business impact\n\nUse Review IDs ONLY as references.\n\nDo NOT infer findings using rating, country, source, categories or discovery score.\n\nBase findings primarily on review text.\n\nOnly identify findings directly supported by evidence.\n\nDo NOT invent user segments.\n\nOnly use:\n\n- Explorer\n- Power User\n- Casual Listener\n\nOtherwise use \"General\".\n\nIMPORTANT\n\nReturn ONLY valid JSON.\n\nDo NOT wrap JSON inside markdown.\n\nDo NOT include explanations.\n\nDo NOT include comments.\n\nThe response must be directly parseable using JSON.parse().\n\n--------------------------------------------------\nRequired JSON Schema\n--------------------------------------------------\n\n{\n  \"themes\":[\n    {\n      \"theme\":\"\",\n      \"problem\":\"\",\n      \"segment\":\"\",\n      \"severity\":\"\",\n      \"confidence\":\"\",\n      \"estimated_review_count\":0,\n      \"representative_review_ids\":[1,2],\n      \"example_quote\":\"\",\n      \"summary\":\"\"\n    }\n  ],\n\n  \"top_requests\":[\n    \"\"\n  ],\n\n  \"positive_patterns\":[\n    \"\"\n  ],\n\n  \"emerging_needs\":[\n    \"\"\n  ],\n\n  \"feature_mentions\":[\n    {\n      \"feature\":\"\",\n      \"mention_type\":\"Positive|Negative|Mixed\",\n      \"estimated_review_count\":0\n    }\n  ]\n}\n\n--------------------------------------------------\nReviews\n--------------------------------------------------\n\n${reviews}\n`;\n\n// Batch metadata\n\nconst batchNumber = $runIndex + 1;\n\nconst startReview = (batchNumber - 1) * items.length + 1;\n\nconst endReview = startReview + items.length - 1;\n\nconst batch_id =\n  `spotify_reviews_batch_${String(batchNumber).padStart(3, \"0\")}_${startReview}-${endReview}`;\n\nreturn [{\n  json:{\n    batch_id,\n    batch_number: batchNumber,\n    review_count: items.length,\n    review_range: `${startReview}-${endReview}`,\n    prompt\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        112
+      ],
+      "id": "8a1a171e-5340-41e3-a5b0-4b598e12baad",
+      "name": "buildPromptNode"
+    },
+    {
+      "parameters": {
+        "fileSelector": "/workspace/cache/spotify_reviews_batch_*.json",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        1344,
+        -80
+      ],
+      "id": "1ebff777-bd0b-4e92-b3dc-4e51ab21ac9b",
+      "name": "Read/Write Files from Disk2",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const analyses = items.map(item => item.json.analysis);\n\nconst prompt = `\nYou are a Principal Product Manager at Spotify.\n\nYou are reviewing AI-generated research synthesized from multiple independent batches of Spotify customer reviews.\n\nEach batch already contains validated research findings.\n\nYour responsibility is to produce ONE evidence-based product strategy.\n\nYou are NOT brainstorming.\n\nYou are NOT generating creative feature ideas.\n\nYou are making a product decision backed by customer evidence.\n\nEvery conclusion MUST be supported by findings that appear across MULTIPLE batch analyses.\n\nNever invent customer problems.\n\nNever invent user segments.\n\nNever invent customer requests.\n\nNever recommend features that cannot be justified using the supplied analyses.\n\nWhenever evidence is weak or conflicting, explicitly lower confidence instead of making assumptions.\n\n==================================================\nSTEP 1 — CONSOLIDATE THE RESEARCH\n==================================================\n\nMerge duplicate findings.\n\nMerge overlapping themes.\n\nMerge similar customer requests.\n\nMerge similar pain points.\n\nMerge similar product opportunities.\n\nRetain ONLY findings that appear consistently across multiple batches.\n\nIgnore isolated complaints unless they clearly indicate an emerging trend.\n\n==================================================\nRESEARCH QUESTIONS\n==================================================\n\nAnswer ALL questions.\n\n1. Why do users struggle to discover new music?\n\n2. What frustrates users about Spotify recommendations?\n\n3. What listening behaviours are users trying to achieve?\n\n4. Why do users repeatedly listen to the same songs?\n\n5. Which user segments experience different discovery challenges?\n\n6. What unmet needs consistently emerge?\n\nFor EVERY answer include\n\n- question\n- concise answer\n- evidence summary\n- confidence\n\n==================================================\nSTEP 2 — PRIORITIZE CUSTOMER PROBLEMS\n==================================================\n\nIdentify every recurring customer problem.\n\nFor EACH evaluate\n\n- batch frequency\n- estimated review volume (relative)\n- customer severity\n- business impact\n- AI suitability\n\nRank the problems.\n\nSelect ONLY ONE primary problem.\n\nThe selected problem MUST\n\n- appear across multiple batches\n- affect a valuable user segment\n- create measurable business impact\n- have a clear AI opportunity\n\nExplain WHY it outranks every other problem.\n\n==================================================\nSTEP 3 — ROOT CAUSE ANALYSIS\n==================================================\n\nIdentify ONLY the root cause of the selected problem.\n\nDo NOT repeat the symptom.\n\nAsk\n\n\"What product limitation causes this problem?\"\n\nFocus on\n\n- recommendation logic\n- ranking\n- feedback loops\n- personalization\n- discovery flow\n- interaction design\n- contextual understanding\n- search limitations\n\nReturn\n\n- problem\n- root cause\n- affected product system\n- supporting evidence\n- confidence\n\n==================================================\nSTEP 4 — PRIMARY USER SEGMENT\n==================================================\n\nChoose EXACTLY ONE segment.\n\nThe segment MUST already exist in the supplied analyses.\n\nNever invent.\n\nNever rename.\n\nNever merge segments.\n\nChoose the segment with\n\n- highest frequency\n- highest severity\n- strongest alignment with the selected problem\n- strongest business value\n\nExplain\n\n- why selected\n- evidence\n- major pain points\n- why solving for this segment benefits Spotify\n\n==================================================\nSTEP 5 — BUSINESS CASE\n==================================================\n\nExplain\n\n- why solving this matters\n- customer impact\n- business impact\n- expected outcomes\n- measurable KPIs\n\n==================================================\nSTEP 6 — PRODUCT OPTION EVALUATION\n==================================================\n\nGenerate AT MOST THREE candidate product directions.\n\nFor EACH include\n\n- idea\n- root cause addressed\n- implementation complexity\n- expected customer impact\n- business impact\n- why it should or should not be chosen\n\nThen SELECT ONLY ONE.\n\nDiscard the remaining options.\n\nThe final MVP MUST be based ONLY on the selected option.\n\n==================================================\nSTEP 7 — DESIGN ONE AI-NATIVE MVP\n==================================================\n\nDesign ONE MVP.\n\nThe MVP MUST\n\n- directly solve the selected root cause\n- evolve an existing Spotify experience\n- require the minimum product surface area\n- reduce user effort\n- naturally fit into Spotify\n\nPrefer evolving\n\n- Home\n- Search\n- Discover Weekly\n- AI DJ\n- Radio\n- Daily Mix\n- Smart Shuffle\n- Now Playing\n\nAvoid creating an entirely new standalone product unless the research overwhelmingly supports it.\n\nDo NOT build another playlist unless the evidence explicitly supports playlists.\n\nDo NOT build another chatbot unless conversational discovery is repeatedly requested.\n\n==================================================\nAI JUSTIFICATION\n==================================================\n\nExplain\n\nWhy existing Spotify features fail\n\nWhy traditional recommendation algorithms fail\n\nExactly what AI enables\n\nAvoid vague statements like\n\n\"AI personalizes recommendations.\"\n\nInstead explain\n\n- intent understanding\n- semantic retrieval\n- embeddings\n- contextual ranking\n- reinforcement learning\n- session awareness\n- real-time preference adaptation\n- conversational understanding\n\nOnly include capabilities that are actually required.\n\n==================================================\nUSER JOURNEY\n==================================================\n\nDescribe a realistic user journey in 5–8 steps.\n\nFor each step include\n\n- User goal\n- User interaction\n- AI decision\n- Outcome\n\n==================================================\nSUCCESS METRICS\n==================================================\n\nSelect measurable KPIs such as\n\n- Discovery Success Rate\n- Songs Saved\n- New Artists Followed\n- Repeat Listening Diversity\n- Weekly Active Discovery Users\n- Time to First Save\n- Recommendation Acceptance Rate\n- Session Length\n- Premium Retention\n- Discovery Satisfaction\n\n==================================================\nPRODUCT DECISION FRAMEWORK\n==================================================\n\nBefore producing the MVP follow this reasoning process.\n\n1. Separate symptoms from root causes.\n\nNever solve symptoms directly.\n\nAlways solve the underlying product limitation.\n\n2. Minimize product surface area.\n\nPrefer evolving an existing Spotify feature instead of creating a new one.\n\n3. Justify every feature.\n\nEvery feature in the MVP must directly solve a validated customer problem.\n\nIf a feature cannot be justified by research, remove it.\n\n4. Challenge your MVP.\n\nAsk\n\n\"Could this problem be solved with a simpler product change?\"\n\nIf YES\n\nchoose the simpler solution.\n\nNever optimize for novelty.\n\nOptimize for customer value.\n\n5. Explain the AI.\n\nDescribe\n\n- what decision AI is making\n- what information AI understands\n- why classical recommendation systems cannot make this decision\n\n6. Prefer product evolution.\n\nOnly introduce a completely new experience if the supplied evidence overwhelmingly requires it.\n\n==================================================\nSELF REVIEW\n==================================================\n\nBefore returning JSON verify\n\n✓ Every problem appears across multiple batches.\n\n✓ Every user segment exists in the supplied analyses.\n\n✓ Every opportunity addresses the selected root cause.\n\n✓ Every MVP feature is justified by evidence.\n\n✓ Every AI capability is necessary.\n\n✓ No unnecessary features remain.\n\n✓ The MVP is the minimum viable solution.\n\nIf any check fails,\n\nrevise the strategy before generating the final output.\n\n==================================================\nOUTPUT\n==================================================\n\nReturn ONLY valid JSON.\n\nNo markdown.\n\nNo explanations.\n\nNo comments.\n\nMust be directly parseable using JSON.parse().\n\n==================================================\nJSON SCHEMA\n==================================================\n\n{\n  \"research_answers\": [],\n  \"problem_ranking\": [],\n  \"root_cause\": {},\n  \"target_segment\": {},\n  \"business_case\": {},\n  \"product_option_evaluation\": [],\n  \"recommended_mvp\": {}\n}\n\n==================================================\nBATCH ANALYSES\n==================================================\n\n${JSON.stringify(analyses, null, 2)}\n`;\n\nreturn [{\n  json: {\n    prompt\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1632,
+        -80
+      ],
+      "id": "410c4e21-a072-414a-8b6f-5ded23c09382",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{$json.prompt}}"
+            },
+            {
+              "content": "You are a Senior Product Manager and Product Research Lead.\n\nYou are given AI-generated analyses from multiple batches of Spotify user reviews.\n\nYour task is to consolidate them into a single research report.\n\nMerge overlapping themes.\n\nPrioritize findings supported across multiple batches.\n\nDo not invent evidence.\n\nReturn ONLY valid JSON.\n\nNever wrap JSON in markdown.\n\nDo not include explanations or comments.\n\nFollow the provided JSON schema exactly."
+            }
+          ]
+        },
+        "jsonOutput": "={{ true }}",
+        "builtInTools": {},
+        "options": {
+          "maxOutputTokens": 30000,
+          "temperature": 0.2,
+          "thinkingBudget": 20000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        -80
+      ],
+      "id": "a7bddd49-db46-47fd-bc23-a62199041b67",
+      "name": "Message a model1",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "RLfYLg0NaxH0c9PJ",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// If Gemini already returned a parsed object, use it directly.\nif ($json.themes || $json.top_requests) {\n  return [{ json: $json }];\n}\n\nlet text = \"\";\n\nif ($json.text) {\n    text = $json.text;\n} else if ($json.output) {\n    text = $json.output;\n} else if ($json.response) {\n    text = $json.response;\n} else {\n    text = JSON.stringify($json);\n}\n\ntext = text\n    .replace(/^```json/i, \"\")\n    .replace(/^```/, \"\")\n    .replace(/```$/, \"\")\n    .trim();\n\ntry {\n    return [{\n        json: JSON.parse(text)\n    }];\n} catch (e) {\n    return [{\n        json: {\n            parse_error: true,\n            error: e.message,\n            raw: text\n        }\n    }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        -80
+      ],
+      "id": "26ed8d21-4008-4dda-bb0e-7078ea779735",
+      "name": "Code in JavaScript4"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/workspace/reports/final_summary.json",
+        "dataPropertyName": "=data",
+        "options": {
+          "append": false
+        }
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        2720,
+        -80
+      ],
+      "id": "0fb72ee3-03c1-4ac8-8193-26ebb12d114d",
+      "name": "Read/Write Files from Disk3"
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        2272,
+        112
+      ],
+      "id": "0a9e8909-f3e4-480d-a98e-53d1ded0c587",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/workspace/cache/{{ $('buildPromptNode').item.json.batch_id }}.json",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        2496,
+        112
+      ],
+      "id": "985fe4b4-b50f-40b7-8807-7bd5535ef970",
+      "name": "Read/Write Files from Disk4"
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        2496,
+        -80
+      ],
+      "id": "1aced2f5-809d-4ec0-8e72-96c41f1b9732",
+      "name": "Convert to File1"
+    },
+    {
+      "parameters": {
+        "amount": 30
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2720,
+        192
+      ],
+      "id": "098948d0-fdd9-417c-b550-e3d7152e72f3",
+      "name": "Wait",
+      "webhookId": "16b9c640-d79a-4015-8295-bbe579bb7325"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Read/Write Files from Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read/Write Files from Disk": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Read/Write Files from Disk2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "buildPromptNode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replace Me": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Replace Me",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buildPromptNode": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read/Write Files from Disk2": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Message a model1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript4": {
+      "main": [
+        [
+          {
+            "node": "Convert to File1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Read/Write Files from Disk4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read/Write Files from Disk4": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File1": {
+      "main": [
+        [
+          {
+            "node": "Read/Write Files from Disk3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Replace Me",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read/Write Files from Disk3": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "2ab28a16-f514-457f-b357-49973a5e740b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "9992ca8a73506500be974967ef17544346444529aa400a1eda0ae79acac57117"
+  },
+  "nodeGroups": [],
+  "id": "zHFWinjRIVWkH6P4",
+  "tags": []
+}
